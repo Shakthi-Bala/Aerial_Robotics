@@ -384,7 +384,17 @@ def transform_sigma_points(x_i,omega_k,delta_t,n):
 
         return y_i
 
+#update step 
+def kalman_update(X_state,P_xz,P_vv,z_measure, z_pred):
 
+    P_vv_inverse=np.linalg.inv(P_vv)
+
+    K_k=P_xz@P_vv_inverse
+    v_k=z_measure-z_pred#innovation 
+    X_state=X_state + K_k@v_k
+
+    #covariance update
+    P_k=P_k_last_step -K_k@P_vv@K_k.T
 
 #Main func
 def main():
