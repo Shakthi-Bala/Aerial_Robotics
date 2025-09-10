@@ -365,7 +365,26 @@ def sigma_points_from_cov(x_prev,P6, Q6,n=7):
         w_w=np.array(W_noise[i][4],W_noise[i][5],W_noise[i][6])
         x_i[i]=np.array(q_mul(q_t_1,q_w),w_t_1+w_w)
 
+
+
     return x_i
+
+def transform_sigma_points(x_i,omega_k,delta_t,n):
+    """
+    projecting the sigma points ahead by process model
+    """
+    y_i=np.zeros((2*n,7))
+    for i in range(n):
+        alpha_delta=(np.linalg.norm(omega_k))*delta_t # not sure if this multiplication operator is correct 
+        e_delta=(np.linalg.norm(omega_k))
+
+        q_delta=[np.cos(alpha_delta/2),e_delta*np.sin(alpha_delta/2)]
+
+        y_i[i]=np.array(q_mul(x_i[i][0],q_delta),x_i[i][1])
+
+        return y_i
+
+
 
 #Main func
 def main():
