@@ -342,6 +342,7 @@ def q_inv(q):
     w,x,y,z = q_normalize(q)
     return np.array([w,-x,-y,-z], float)
 
+#Step1
 def sigma_points_from_cov(x_prev,P6, Q6,n=7):
     """
     x_prev= previous state vec 
@@ -366,6 +367,96 @@ def sigma_points_from_cov(x_prev,P6, Q6,n=7):
         x_i[i]=np.array(q_mul(q_t_1,q_w),w_t_1+w_w)
 
     return x_i
+
+#Step 2
+def transform_sigma_points(x_i,omega_k,delta_t,n):
+    y_i=np.zeros((2*n,7))
+    for i in range(n):
+        alpha_delta=(np.linalg.norm(omega_k))*delta_t # not sure if this multiplication operator is correct 
+        e_delta=(np.linalg.norm(omega_k))
+
+        q_delta=[np.cos(alpha_delta/2),e_delta*np.sin(alpha_delta/2)]
+
+        y_i[i]=np.array(q_mul(x_i[i][0],q_delta),x_i[i][1])
+
+        return y_i
+
+#Step 3
+def compute_mean(y_i,max_iter=10):
+    q_t = y_i[0,0:4].copy()
+    for _ in range(max_iter):
+        for i in range(y_i.shape[0]):
+            e_list=[]
+            q_i = y_i[i]
+            e_i = q_mul(q_i, q_inv(q_t))
+            e_list = e_list.append(rotvec_from_q(e_i))
+        
+        e_list = np.array(e_list)
+        e_i_bar = np.mean(e_list, axis=0)
+        q_i_bar = q_from_rotvec(e_i_bar)
+        q_t = q_mul(q_i_bar, q_t)
+        q_t = q_normalize(q_t)
+    w_bar = np.mean(y_i[:,4:7], axis=0)
+
+    # Return combined mean state
+    x_bar = np.zeros(7)
+    x_bar[0:4] = q_t
+    x_bar[4:7] = w_bar
+    return x_bar
+
+#Step4
+def boxminus_state(x1, x2):
+    dq = q_mul(x1[0:4], q_inv(x2[0:4]))      
+    dtheta = rotvec_from_q(dq)                
+    dw = x1[4:7] - x2[4:7]                   
+    return np.r_[dtheta, dw]  
+
+def computing_covariance(x_bar,y_i,z_i=None):
+    for i in range(y_i.shape[0]):
+        M = y_i.shape[0]                      # = 2n
+        q_bar = x_bar[0:4]
+        w_bar = x_bar[4:7]
+
+        # Build E rows as W_i'^T = [ rotvec(q_i q̄^{-1})^T , (ω_i-ω̄)^T ]
+        E = np.empty((M, 6), dtype=float)
+        for i in range(M):
+            qi = y_i[i, 0:4]
+            wi = y_i[i, 4:7]
+            dq = q_mul(qi, q_inv(q_bar))      # r_w quaternion (eq. 67)
+            r_w = rotvec_from_q(dq)           # rotation vector part
+            omega_w = wi - w_bar              # (eq. 66)
+            E[i, :] = np.r_[r_w, omega_w]
+
+        # Px = (1/M) * E^T E  (M = 2n)
+        Px = (E.T @ E) / float(M)
+        Px = 0.5 * (Px + Px.T)                # symmetry guard
+
+        Pvv = None
+        Pxz = None
+        if z_i is not None:
+            # center measurement sigma points
+            z_bar = np.mean(z_i, axis=0)
+            Zc = z_i - z_bar[None, :]
+            # Pvv = (1/M) * Zc^T Zc
+            Pvv = (Zc.T @ Zc) / float(M)
+            Pvv = 0.5 * (Pvv + Pvv.T)
+            # Pxz = (1/M) * E^T Zc
+            Pxz = (E.T @ Zc) / float(M)
+
+        return Px, Pvv, Pxz
+
+def kalman_update(X_state,P_xz,P_vv,z_measure, z_pred):
+
+    P_vv_inverse=np.linalg.inv(P_vv)
+
+    K_k=P_xz@P_vv_inverse
+    v_k=z_measure-z_pred#innovation 
+    X_state=X_state + K_k@v_k
+
+    #covariance update
+    P_k=P_k_last_step -K_k@P_vv@K_k.T
+
+
 
 #Main func
 def main():
