@@ -344,11 +344,7 @@ def q_inv(q):
 
 #Step1
 def sigma_points_from_cov(x_prev,P6, Q6,n=7):
-    """
-    x_prev= previous state vec 
-    Step 2 (your list): P_{k-1} + Q  -> {Wi} in R^6, distributed around 0 with that covariance.
-    We use the 'classic' Julier spread (no alpha/kappa/beta knobs).
-    """
+   
     q_t_1=np.array(x_prev[1],x_prev[2],x_prev[3])
     w_t_1=np.array(x_prev[4],x_prev[5],x_prev[6])
     S = np.linalg.cholesky(P6 + Q6 + 1e-12*np.eye(6))
@@ -417,7 +413,7 @@ def computing_covariance(x_bar,y_i,z_i=None):
         q_bar = x_bar[0:4]
         w_bar = x_bar[4:7]
 
-        # Build E rows as W_i'^T = [ rotvec(q_i q̄^{-1})^T , (ω_i-ω̄)^T ]
+
         E = np.empty((M, 6), dtype=float)
         for i in range(M):
             qi = y_i[i, 0:4]
@@ -442,19 +438,19 @@ def computing_covariance(x_bar,y_i,z_i=None):
             Pvv = 0.5 * (Pvv + Pvv.T)
             # Pxz = (1/M) * E^T Zc
             Pxz = (E.T @ Zc) / float(M)
-
         return Px, Pvv, Pxz
+    
 
 def kalman_update(X_state,P_xz,P_vv,z_measure, z_pred):
 
     P_vv_inverse=np.linalg.inv(P_vv)
 
     K_k=P_xz@P_vv_inverse
-    v_k=z_measure-z_pred#innovation 
+    v_k=z_measure-z_pred
     X_state=X_state + K_k@v_k
 
     #covariance update
-    P_k=P_k_last_step -K_k@P_vv@K_k.T
+    P_k= P_k_last_step -K_k@P_vv@K_k.T
 
 
 
@@ -544,6 +540,8 @@ def main():
     vic_yaw   = eul_vic[:, 0]
 
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
+    Q = np.diag([105.0, 105.0, 105.0,   0.1, 0.1, 0.1]) 
+    R = np.diag([11.2, 11.2, 11.2, 0.01, 0.01, 0.01]) 
 
     # Roll
     axes[0].plot(t_imu, vic_roll,      label='Vicon')
