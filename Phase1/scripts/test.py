@@ -348,24 +348,25 @@ def sigma_points_from_cov(x_prev,P6, Q6,n=7):
     Step 2 (your list): P_{k-1} + Q  -> {Wi} in R^6, distributed around 0 with that covariance.
     We use the 'classic' Julier spread (no alpha/kappa/beta knobs).
     """
-    q_t_1=np.array(x_prev[1],x_prev[2],x_prev[3])
-    w_t_1=np.array(x_prev[4],x_prev[5],x_prev[6])
+
+    q_t_1=x_prev[0:4]
+    w_t_1=x_prev[4:7]
     S = np.linalg.cholesky(P6 + Q6 + 1e-12*np.eye(6))
-    W_inter=np.sqrt(2*n)*S
+    W_inter=np.sqrt(n-1)*S
     W_noise=np.zeros((2*n,n))
     alpha_w=np.zeros((2*n,n))
-    x_i=np.zeros((2*n,7))
-    for i in range(W_noise.shape[1]):
-        W_noise[i]=W_inter[:,i]
-        W_noise[i+n]=-W_inter[:,i]
+    x_i=np.zeros((2*n,n))
+    for i in range(n-1):
+        W_noise[i,:]=W_inter[:,i]
+        W_noise[i+n,:]=-W_inter[:,i]
         
-        alpha_w[i]=np.linalg.norm(W_noise[i][1],W_noise[i][2],W_noise[i][3])
-        e_w=W_noise[i]/alpha_w
-        q_w=[np.cos(alpha_w/2),e_w*np.sin(alpha_w/2)]
-        w_w=np.array(W_noise[i][4],W_noise[i][5],W_noise[i][6])
-        x_i[i]=np.array(q_mul(q_t_1,q_w),w_t_1+w_w)
-
-
+    for i in range(2*(n-1)):
+        rot_pertub=W_noise[i,0:3]
+        angular_vel_pertub=W_noise[i,3:6]
+        q_pertub=q_from_rotvec(rot_pertub)
+        
+        x_i[i,0:4]=q_mul(q_pertub,q_t_1)
+        x_i[i,4:7]=w_t_1+angular_vel_pertub
 
     return x_i
 
@@ -373,16 +374,23 @@ def transform_sigma_points(x_i,omega_k,delta_t,n):
     """
     projecting the sigma points ahead by process model
     """
+
     y_i=np.zeros((2*n,7))
+    alpha_delta=(np.linalg.norm(omega_k))*delta_t 
+    if alpha_delta>1e-12:
+        axis=omega_k/np.linalg.norm(omega_k)
+        rot_vec_delta=alpha_delta*axis
+        q_delta=q_from_rotvec(rot_vec_delta)
+
     for i in range(n):
-        alpha_delta=(np.linalg.norm(omega_k))*delta_t # not sure if this multiplication operator is correct 
-        e_delta=(np.linalg.norm(omega_k))
-
-        q_delta=[np.cos(alpha_delta/2),e_delta*np.sin(alpha_delta/2)]
-
-        y_i[i]=np.array(q_mul(x_i[i][0],q_delta),x_i[i][1])
-
-        return y_i
+        
+        q_old=x_i[i,0:4]
+        w_old=x_i[i,4:7]
+        w_new=w_old
+        q_new=q_mul(q_old,q_delta)
+        y_i[i,:]=np.hstack([q_new,w_new])
+    
+    return y_i
 
 #update step 
 def kalman_update(X_state,P_xz,P_vv,z_measure, z_pred):
