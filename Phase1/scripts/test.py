@@ -17,9 +17,9 @@ import matplotlib.pyplot as plt
 THIS_DIR = pathlib.Path(__file__).resolve().parent
 
 #Paths
-# imu_path   = "/home/alien/MyDirectoryID_p0/Phase1/Data/Train/IMU/imuRaw1.mat"
-# vic_path   = "/home/alien/MyDirectoryID_p0/Phase1/Data/Train/Vicon/viconRot1.mat"
-# param_path = "/home/alien/MyDirectoryID_p0/Phase1/IMUParams.mat"
+imu_path   = "/home/alien/MyDirectoryID_p0/Phase1/Data/Train/IMU/imuRaw1.mat"
+vic_path   = "/home/alien/MyDirectoryID_p0/Phase1/Data/Train/Vicon/viconRot1.mat"
+param_path = "/home/alien/MyDirectoryID_p0/Phase1/IMUParams.mat"
 
 OUT_DIR = (THIS_DIR / "outputs").resolve()
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -374,84 +374,72 @@ def transform_sigma_points(x_i,omega_k,delta_t,n):
         q_delta=[np.cos(alpha_delta/2),e_delta*np.sin(alpha_delta/2)]
 
         y_i[i]=np.array(q_mul(x_i[i][0],q_delta),x_i[i][1])
-
         return y_i
 
 #Step 3
-def compute_mean(y_i,max_iter=10):
+def compute_mean(y_i, max_iter=15):
     q_t = y_i[0,0:4].copy()
     for _ in range(max_iter):
+        e_list=[]
         for i in range(y_i.shape[0]):
-            e_list=[]
-            q_i = y_i[i]
-            e_i = q_mul(q_i, q_inv(q_t))
-            e_list = e_list.append(rotvec_from_q(e_i))
-        
-        e_list = np.array(e_list)
-        e_i_bar = np.mean(e_list, axis=0)
-        q_i_bar = q_from_rotvec(e_i_bar)
-        q_t = q_mul(q_i_bar, q_t)
+            q_i = y_i[i,0:4]
+            dq  = q_mul(q_i, q_inv(q_t))
+            e_list.append(rotvec_from_q(dq))
+        e_list = np.asarray(e_list)
+        e_bar = np.mean(e_list, axis=0)
+        if np.linalg.norm(e_bar) < 1e-9:
+            break
+        dq_bar = q_from_rotvec(e_bar)
+        q_t = q_mul(dq_bar, q_t)
         q_t = q_normalize(q_t)
     w_bar = np.mean(y_i[:,4:7], axis=0)
-
-    # Return combined mean state
-    x_bar = np.zeros(7)
-    x_bar[0:4] = q_t
-    x_bar[4:7] = w_bar
+    x_bar = np.zeros(7); x_bar[0:4] = q_t; x_bar[4:7] = w_bar
     return x_bar
 
 #Step4
-def boxminus_state(x1, x2):
-    dq = q_mul(x1[0:4], q_inv(x2[0:4]))      
-    dtheta = rotvec_from_q(dq)                
-    dw = x1[4:7] - x2[4:7]                   
-    return np.r_[dtheta, dw]  
-
-def computing_covariance(x_bar,y_i,z_i=None):
-    for i in range(y_i.shape[0]):
-        M = y_i.shape[0]                      # = 2n
-        q_bar = x_bar[0:4]
-        w_bar = x_bar[4:7]
-
-
-        E = np.empty((M, 6), dtype=float)
-        for i in range(M):
-            qi = y_i[i, 0:4]
-            wi = y_i[i, 4:7]
-            dq = q_mul(qi, q_inv(q_bar))      # r_w quaternion (eq. 67)
-            r_w = rotvec_from_q(dq)           # rotation vector part
-            omega_w = wi - w_bar              # (eq. 66)
-            E[i, :] = np.r_[r_w, omega_w]
-
-        # Px = (1/M) * E^T E  (M = 2n)
-        Px = (E.T @ E) / float(M)
-        Px = 0.5 * (Px + Px.T)                # symmetry guard
-
-        Pvv = None
-        Pxz = None
-        if z_i is not None:
-            # center measurement sigma points
-            z_bar = np.mean(z_i, axis=0)
-            Zc = z_i - z_bar[None, :]
-            # Pvv = (1/M) * Zc^T Zc
-            Pvv = (Zc.T @ Zc) / float(M)
-            Pvv = 0.5 * (Pvv + Pvv.T)
-            # Pxz = (1/M) * E^T Zc
-            Pxz = (E.T @ Zc) / float(M)
-        return Px, Pvv, Pxz
+def computing_covariance(x_bar, y_i, z_i=None):
+    M = y_i.shape[0]
+    q_bar = x_bar[0:4]; w_bar = x_bar[4:7]
+    E = np.empty((M, 6), dtype=float)
+    for i in range(M):
+        qi = y_i[i, 0:4]; wi = y_i[i, 4:7]
+        dq = q_mul(qi, q_inv(q_bar))
+        r_w = rotvec_from_q(dq)
+        omega_w = wi - w_bar
+        E[i,:] = np.r_[r_w, omega_w]
+    Px = (E.T @ E) / float(M)
+    Px = 0.5 * (Px + Px.T)
+    Pvv = None; Pxz = None
+    if z_i is not None:
+        z_bar = np.mean(z_i, axis=0)
+        Zc = z_i - z_bar[None,:]
+        Pvv = (Zc.T @ Zc) / float(M); Pvv = 0.5*(Pvv + Pvv.T)
+        Pxz = (E.T @ Zc) / float(M)
+    return Px, Pvv, Pxz
     
 
 def kalman_update(X_state,P_xz,P_vv,z_measure, z_pred):
-
     P_vv_inverse=np.linalg.inv(P_vv)
+    out = np.zeros(7)
+    K_k=P_xz @ P_vv_inverse
+    v_k= z_measure - z_pred
+    eps = K_k @ v_k
+    dq = rotvec_from_q(eps)
+    q_new = q_mul(X_state[0:4,dq])
+    omega_new = X_state[4:7] + eps[3:6]
+    out[0:4] = q_normalize(q_new)
+    out[4:7] = omega_new
+    X_state= X_state + K_k @ v_k
+    return X_state, K_k, v_k
 
-    K_k=P_xz@P_vv_inverse
-    v_k=z_measure-z_pred
-    X_state=X_state + K_k@v_k
-
-    #covariance update
-    P_k= P_k_last_step -K_k@P_vv@K_k.T
-
+def project_acc_measurement(Yi, g_ref=np.array([0,0,9.81], float)):
+    Zi = np.zeros((Yi.shape[0], 3))
+    for i in range(Yi.shape[0]):
+        q = Yi[i,0:4]
+        Rb = R.from_quat([q[1],q[2],q[3],q[0]]).as_matrix()
+        zb = Rb.T @ g_ref
+        n = np.linalg.norm(zb); Zi[i] = zb/(n if n>0 else 1.0)
+    return Zi
 
 
 #Main func
@@ -462,9 +450,9 @@ def main():
     print(f"[INFO] Outputs will be saved to: {OUT_DIR}")
 
     # Load data
-    vals, t_imu = load_imu_data(args.imu_path)
-    rots_vic_3x3xN, t_vic = load_vicon_data(args.vic_path)
-    scales, biases = load_params(args.param_path)
+    vals, t_imu = load_imu_data(imu_path)
+    rots_vic_3x3xN, t_vic = load_vicon_data(vic_path)
+    scales, biases = load_params(param_path)
 
     # Load data
     # vals, t_imu = load_imu_data(imu_path)                 # vals: (6,N)
@@ -586,30 +574,30 @@ def main():
     print(f"[OK] Figure saved to: {out_path.resolve()}")
 
 if __name__ == "_main_":
-    parser = argparse.ArgumentParser(
-        description="Process and compare IMU orientation estimates."
-    )
+    # parser = argparse.ArgumentParser(
+    #     description="Process and compare IMU orientation estimates."
+    # )
     
-    parser.add_argument(
-        '--imu_path', 
-        type=str, 
-        required=True, 
-        help="Path to the IMU .mat file"
-    )
+    # parser.add_argument(
+    #     '--imu_path', 
+    #     type=str, 
+    #     required=True, 
+    #     help="Path to the IMU .mat file"
+    # )
     
-    parser.add_argument(
-        '--vic_path', 
-        type=str, 
-        required=True, 
-        help="Path to the Vicon .mat file"
-    )
+    # parser.add_argument(
+    #     '--vic_path', 
+    #     type=str, 
+    #     required=True, 
+    #     help="Path to the Vicon .mat file"
+    # )
     
-    parser.add_argument(
-        '--param_path', 
-        type=str, 
-        required=True, 
-        help="Path to the IMU parameters .mat file"
-    )
+    # parser.add_argument(
+    #     '--param_path', 
+    #     type=str, 
+    #     required=True, 
+    #     help="Path to the IMU parameters .mat file"
+    # )
 
-    args = parser.parse_args()
-    main(args)
+    # args = parser.parse_args()
+    main()
