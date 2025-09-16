@@ -342,81 +342,135 @@ def q_inv(q):
     w,x,y,z = q_normalize(q)
     return np.array([w,-x,-y,-z], float)
 
-#Step1
-def sigma_points_from_cov(x_prev,P6, Q6,n=7):
-   
-    q_t_1=np.array(x_prev[1],x_prev[2],x_prev[3])
-    w_t_1=np.array(x_prev[4],x_prev[5],x_prev[6])
+def transform_to_measurement_space(sigma_points):
+    g_world = np.array([0, 0, 9.81])
+    z_points = np.zeros((sigma_points.shape[0], 3))
+
+    for i in range(sigma_points.shape[0]):
+        q_wxyz = sigma_points[i, 0:4]
+        q_xyzw = np.roll(q_wxyz, -1)
+        rot_matrix = R.from_quat(q_xyzw).as_matrix()
+        g_sensor = rot_matrix.T @ g_world
+        z_points[i, :] = g_sensor
+
+    return z_points
+
+
+def sigma_points_from_cov(x_prev,P6, Q6,n=6):
+    q_t_1=x_prev[0:4]
+    w_t_1=x_prev[4:7]
     S = np.linalg.cholesky(P6 + Q6 + 1e-12*np.eye(6))
-    W_inter=np.sqrt(2*n)*S
+    W_inter=np.sqrt(n)*S
     W_noise=np.zeros((2*n,n))
     alpha_w=np.zeros((2*n,n))
     x_i=np.zeros((2*n,7))
-    for i in range(W_noise.shape[1]):
-        W_noise[i]=W_inter[:,i]
-        W_noise[i+n]=-W_inter[:,i]
+    for i in range(n):
+        W_noise[i,:]=W_inter[:,i]
+        W_noise[i+n,:]=-W_inter[:,i]
         
-        alpha_w[i]=np.linalg.norm(W_noise[i][1],W_noise[i][2],W_noise[i][3])
-        e_w=W_noise[i]/alpha_w
-        q_w=[np.cos(alpha_w/2),e_w*np.sin(alpha_w/2)]
-        w_w=np.array(W_noise[i][4],W_noise[i][5],W_noise[i][6])
-        x_i[i]=np.array(q_mul(q_t_1,q_w),w_t_1+w_w)
+    for i in range(2*(n)):
+        rot_pertub=W_noise[i,0:3]
+        angular_vel_pertub=W_noise[i,3:6]
+        q_pertub=q_from_rotvec(rot_pertub)
+        
+        x_i[i,0:4]=q_mul(q_pertub,q_t_1)
+        x_i[i,4:7]=w_t_1+angular_vel_pertub
 
     return x_i
 
-#Step 2
 def transform_sigma_points(x_i,omega_k,delta_t,n):
+    """
+    projecting the sigma points ahead by process model
+    """
+
     y_i=np.zeros((2*n,7))
-    for i in range(n):
-        alpha_delta=(np.linalg.norm(omega_k))*delta_t # not sure if this multiplication operator is correct 
-        e_delta=(np.linalg.norm(omega_k))
+    
+    
+    for i in range(x_i.shape[0]):
+        
+        q_old=x_i[i,0:4]
+        w_old=x_i[i,4:7]
+        w_new=w_old
+        alpha_delta=(np.linalg.norm(omega_k))*delta_t 
+        
+        if alpha_delta>1e-12:
+            axis=omega_k/np.linalg.norm(omega_k)
+            rot_vec_delta=alpha_delta*axis
+            q_delta=q_from_rotvec(rot_vec_delta)
+            q_new=q_mul(q_old,q_delta)
+        
+        else:
+            q_new=q_old
 
-        q_delta=[np.cos(alpha_delta/2),e_delta*np.sin(alpha_delta/2)]
-
-        y_i[i]=np.array(q_mul(x_i[i][0],q_delta),x_i[i][1])
-        return y_i
+        y_i[i,:]=np.hstack([q_new,w_new])
+    
+    return y_i
 
 #Step 3
-def compute_mean(y_i, max_iter=15):
+def compute_mean(y_i,max_iter=10):
     q_t = y_i[0,0:4].copy()
     for _ in range(max_iter):
-        e_list=[]
+        e_list=[]   
         for i in range(y_i.shape[0]):
+            
             q_i = y_i[i,0:4]
-            dq  = q_mul(q_i, q_inv(q_t))
-            e_list.append(rotvec_from_q(dq))
-        e_list = np.asarray(e_list)
-        e_bar = np.mean(e_list, axis=0)
-        if np.linalg.norm(e_bar) < 1e-9:
-            break
-        dq_bar = q_from_rotvec(e_bar)
-        q_t = q_mul(dq_bar, q_t)
+            e_i = q_mul(q_i, q_inv(q_t))
+            e_list.append(rotvec_from_q(e_i))
+        
+        e_list = np.array(e_list)
+        e_i_bar = np.mean(e_list, axis=0)
+        q_i_bar = q_from_rotvec(e_i_bar)
+        q_t = q_mul(q_i_bar, q_t)
         q_t = q_normalize(q_t)
     w_bar = np.mean(y_i[:,4:7], axis=0)
-    x_bar = np.zeros(7); x_bar[0:4] = q_t; x_bar[4:7] = w_bar
+
+    # Return combined mean state
+    x_bar = np.zeros(7)
+    x_bar[0:4] = q_t
+    x_bar[4:7] = w_bar
     return x_bar
 
-#Step4
-def computing_covariance(x_bar, y_i, z_i=None):
-    M = y_i.shape[0]
-    q_bar = x_bar[0:4]; w_bar = x_bar[4:7]
-    E = np.empty((M, 6), dtype=float)
-    for i in range(M):
-        qi = y_i[i, 0:4]; wi = y_i[i, 4:7]
-        dq = q_mul(qi, q_inv(q_bar))
-        r_w = rotvec_from_q(dq)
-        omega_w = wi - w_bar
-        E[i,:] = np.r_[r_w, omega_w]
-    Px = (E.T @ E) / float(M)
-    Px = 0.5 * (Px + Px.T)
-    Pvv = None; Pxz = None
-    if z_i is not None:
-        z_bar = np.mean(z_i, axis=0)
-        Zc = z_i - z_bar[None,:]
-        Pvv = (Zc.T @ Zc) / float(M); Pvv = 0.5*(Pvv + Pvv.T)
-        Pxz = (E.T @ Zc) / float(M)
-    return Px, Pvv, Pxz
+
+def computing_covariance(x_bar,y_i,z_i=None):
+        M = y_i.shape[0]                      # = 2n
+        q_bar = x_bar[0:4]
+        w_bar = x_bar[4:7]
+
+
+        E = np.empty((M, 6), dtype=float)
+        for i in range(M):
+            qi = y_i[i, 0:4]
+            wi = y_i[i, 4:7]
+            dq = q_mul(qi, q_inv(q_bar))      # r_w quaternion (eq. 67)
+            r_w = rotvec_from_q(dq)           # rotation vector part
+            omega_w = wi - w_bar              # (eq. 66)
+            E[i, :] = np.r_[r_w, omega_w]
+
+        # Px = (1/M) * E^T E  (M = 2n)
+        Px = (E.T @ E) / float(M)
+        Px = 0.5 * (Px + Px.T)                # symmetry guard
+
+        Pvv = None
+        Pxz = None
+        if z_i is not None:
+            # center measurement sigma points
+            z_bar = np.mean(z_i, axis=0)
+            Zc = z_i - z_bar[None, :]
+            # Pvv = (1/M) * Zc^T Zc
+            Pvv = (Zc.T @ Zc) / float(M)
+            Pvv = 0.5 * (Pvv + Pvv.T)
+            # Pxz = (1/M) * E^T Zc
+            Pxz = (E.T @ Zc) / float(M)
+        return Px, Pvv, Pxz
     
+def boxplus_state(x, eps):
+    """
+    applying correction to state x using boxplus
+    """
+    dq_quat = q_from_rotvec(eps[0:3])
+    q_new = q_mul(dq_quat, x[0:4])
+    omega_new = x[4:7] + eps[3:6]
+    return np.r_[q_normalize(q_new), omega_new]
 
 def kalman_update(X_state,P_xz,P_vv,z_measure, z_pred):
     P_vv_inverse=np.linalg.inv(P_vv)
@@ -441,18 +495,17 @@ def project_acc_measurement(Yi, g_ref=np.array([0,0,9.81], float)):
         n = np.linalg.norm(zb); Zi[i] = zb/(n if n>0 else 1.0)
     return Zi
 
-
 #Main func
-def main():
+def main(args):
     print(f"[INFO] Running from: {pathlib.Path.cwd()}")
     print(f"[INFO] Outputs → {OUT_DIR}")
     print(f"[INFO] Running from: {pathlib.Path.cwd()}")
     print(f"[INFO] Outputs will be saved to: {OUT_DIR}")
 
     # Load data
-    vals, t_imu = load_imu_data(imu_path)
-    rots_vic_3x3xN, t_vic = load_vicon_data(vic_path)
-    scales, biases = load_params(param_path)
+    vals, t_imu = load_imu_data(args.imu_path)
+    rots_vic_3x3xN, t_vic = load_vicon_data(args.vic_path)
+    scales, biases = load_params(args.param_path)
 
     # Load data
     # vals, t_imu = load_imu_data(imu_path)                 # vals: (6,N)
@@ -491,11 +544,12 @@ def main():
     gyro_yaw   = eul_gyro[:, 0]
 
     # Accel-only
-    alpha_val, _, _ = compute_alpha(t_imu, fc=0.3) 
+    # alpha_val, _, _ = compute_alpha(t_imu, fc=0.3) 
+    alpha_val=0.9
     acc_roll_lp, acc_pitch_lp, acc_yaw_lp = accel_lowpass_filter(
         t_imu, ax_raw, ay_raw, az_raw, scales, biases, alpha_val
     ) 
-
+    print(acc_roll_lp, acc_pitch_lp, acc_yaw_lp)
     #Comp filter
     cf_roll, cf_pitch, cf_yaw = complementary_filter_angles(
         t_imu, wx, wy, wz, acc_roll_lp, acc_pitch_lp, acc_yaw_lp, alpha_val
@@ -519,6 +573,75 @@ def main():
     )
     mad_roll, mad_pitch, mad_yaw = mad_angles.T
 
+
+    #UKF
+    #process error 
+    Q = np.diag([100.0, 100.0, 100.0, 0.1, 0.1, 0.1])     
+
+    #accel error      
+    Rm = np.diag([10.0,10.0,10.0])         
+
+
+    x_prev = np.zeros(7); x_prev[0:4] = q0_wxyz; x_prev[4:7] = np.array([wx[0],wy[0],wz[0]])
+    P_prev = np.eye(6)*1e-3
+
+    N = t_imu.size
+    ukf_q = np.zeros((N,4)); ukf_q[0] = x_prev[0:4]
+    ukf_angles = np.zeros((N,3))
+    g_ref = np.array([0,0,9.81], float)
+
+    for k in range(1, N):
+        dt = max(t_imu[k]-t_imu[k-1], 1e-6)
+        omega_km1 = np.array([wx[k-1], wy[k-1], wz[k-1]])
+
+        # Step 1: sigma from P_prev+Q around x_prev
+        Xi = sigma_points_from_cov(x_prev, P_prev, Q, n=6)
+
+        # Step 2: propagate sigma points with q_delta(ω_k-1, dt)
+        Yi = transform_sigma_points(Xi, omega_km1, dt, n=6)
+
+        # Step 3: mean (a priori)
+        x_bar = compute_mean(Yi)
+
+        # A priori covariance from Yi (and set up measurement cross-covs)
+        # Project Yi -> Zi via gravity model
+        Zi = project_acc_measurement(Yi, g_ref=g_ref)
+        Px, Pvv, Pxz = computing_covariance(x_bar, Yi, z_i=Zi)  # Px is P_k^-, Pvv is cov of Zi about its mean, Pxz cross-cov
+
+        # z_pred and z_meas
+        z_pred = np.mean(Zi,axis=0)
+        z_meas = np.array([ax[k], ay[k], az[k]])
+        norm = np.linalg.norm(z_meas)
+        if norm > 1e-6:
+            z_meas /= norm
+
+        # Innovation and gain
+        S = Pvv + Rm
+        K = Pxz @ np.linalg.inv(S)
+        v = z_meas - z_pred
+
+        # State update on manifold
+        eps = K @ v
+        x_post = boxplus_state(x_bar, eps)
+
+        # Update covarience estimate
+        P_post = Px - K @ S @ K.T
+        P_post = 0.5*(P_post + P_post.T)
+
+        # Store & roll
+        x_prev = x_post; P_prev = P_post
+        ukf_q[k] = x_post[0:4]
+        # Euler (ZYX → yaw,pitch,roll)
+        r = R.from_quat([ukf_q[k,1], ukf_q[k,2], ukf_q[k,3], ukf_q[k,0]]).as_euler('ZYX')
+        ukf_angles[k] = np.array([r[2], r[1], r[0]])[[0,1,2]]  # we'll unpack properly below
+
+    ukf_roll  = ukf_angles[:,0]
+    ukf_pitch = ukf_angles[:,1]
+    # compute yaw directly from quaternion for consistency
+    eul_ukf = R.from_quat(np.column_stack([ukf_q[:,1],ukf_q[:,2],ukf_q[:,3],ukf_q[:,0]])).as_euler('ZYX')
+    ukf_yaw = eul_ukf[:,0]
+
+
     #Vicon sync
     idx_match = nearest_indices(t_vic, t_imu)
     R_vic_aligned = rmat_stack_to_R_safe(rots_vic_3x3xN[:, :, idx_match])  
@@ -528,15 +651,14 @@ def main():
     vic_yaw   = eul_vic[:, 0]
 
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-    Q = np.diag([105.0, 105.0, 105.0,   0.1, 0.1, 0.1]) 
-    R = np.diag([11.2, 11.2, 11.2, 0.01, 0.01, 0.01]) 
-
+    
     # Roll
     axes[0].plot(t_imu, vic_roll,      label='Vicon')
     axes[0].plot(t_imu, gyro_roll,     label='Gyro-only')
     axes[0].plot(t_imu, acc_roll_lp,   label='Accel-only (LPF)')
-    axes[0].plot(t_imu, cf_roll,       label='Complementary')
+    # axes[0].plot(t_imu, cf_roll,       label='Complementary')
     axes[0].plot(t_imu, mad_roll,      label='Madgwick')
+    axes[0].plot(t_imu, ukf_roll,      label='UKF')
 
     axes[0].set_ylabel('Roll (rad)')
     axes[0].legend(loc='best')
@@ -546,8 +668,9 @@ def main():
     axes[1].plot(t_imu, vic_pitch,     label='Vicon')
     axes[1].plot(t_imu, gyro_pitch,    label='Gyro-only')
     axes[1].plot(t_imu, acc_pitch_lp,  label='Accel-only (LPF)')
-    axes[1].plot(t_imu, cf_pitch,      label='Complementary')
+    # axes[1].plot(t_imu, cf_pitch,      label='Complementary')
     axes[1].plot(t_imu, mad_pitch,     label='Madgwick')
+    axes[1].plot(t_imu, ukf_pitch,     label='UKF')
     
     axes[1].set_ylabel('Pitch (rad)')
     axes[1].legend(loc='best')
@@ -559,13 +682,14 @@ def main():
     axes[2].plot(t_imu, acc_yaw_lp,    label='Accel-only (LPF)')  
     axes[2].plot(t_imu, cf_yaw,        label='Complementary')
     axes[2].plot(t_imu, mad_yaw,       label='Madgwick')
+    axes[2].plot(t_imu, ukf_yaw,       label='UKF')
 
     axes[2].set_xlabel('Time (s)')
     axes[2].set_ylabel('Yaw (rad)')
     axes[2].legend(loc='best')
     axes[2].grid(True, alpha=0.3)
 
-    fig.suptitle("Attitude Comparison: Gyro | Acc(LPF) | Complementary | Madgwick", y=0.98)
+    fig.suptitle("Attitude Comparison: Gyro | Acc(LPF) | Complementary | Madgwick | UKF", y=0.98)
     fig.tight_layout(rect=[0, 0.03, 1, 0.97])
 
     out_path = OUT_DIR / "attitude_all_2D_with_CF.png"
@@ -573,31 +697,32 @@ def main():
     plt.close(fig)
     print(f"[OK] Figure saved to: {out_path.resolve()}")
 
-if __name__ == "_main_":
-    # parser = argparse.ArgumentParser(
-    #     description="Process and compare IMU orientation estimates."
-    # )
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Process and compare IMU orientation estimates."
+    )
     
-    # parser.add_argument(
-    #     '--imu_path', 
-    #     type=str, 
-    #     required=True, 
-    #     help="Path to the IMU .mat file"
-    # )
+    parser.add_argument(
+        '--imu_path', 
+        type=str, 
+        required=True, 
+        help="Path to the IMU .mat file"
+    )
     
-    # parser.add_argument(
-    #     '--vic_path', 
-    #     type=str, 
-    #     required=True, 
-    #     help="Path to the Vicon .mat file"
-    # )
+    parser.add_argument(
+        '--vic_path', 
+        type=str, 
+        required=True, 
+        help="Path to the Vicon .mat file"
+    )
     
-    # parser.add_argument(
-    #     '--param_path', 
-    #     type=str, 
-    #     required=True, 
-    #     help="Path to the IMU parameters .mat file"
-    # )
+    parser.add_argument(
+        '--param_path', 
+        type=str, 
+        required=True, 
+        help="Path to the IMU parameters .mat file"
+    )
 
-    # args = parser.parse_args()
-    main()
+    args = parser.parse_args()
+    main(args)
+    #main()
