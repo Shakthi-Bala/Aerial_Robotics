@@ -2,6 +2,8 @@ import numpy as np
 from scipy.interpolate import splprep, splev, BSpline
 import matplotlib.pyplot as plt
 
+
+
 class TrajectoryGenerator:
     """
     Generate smooth trajectory from waypoints using  
@@ -11,180 +13,90 @@ splines
     
     def __init__(self, waypoints):
         self.waypoints = np.array(waypoints)
-        self.trajectory_duration = None
-        self.max_velocity = None
-        self.max_acceleration = None
-        self.average_velocity = 0.6  
+        
+        # map splat configuration
+        self.trajectory_duration = 5  # seconds
+        self.max_velocity = 1.5 # m/s
+        self.max_acceleration = 1  # m/s^2
+        self.average_velocity = 0.75   # m/s
+        self.total_duration = 0.0
+
+
+        if len(waypoints) > 3:
+            self.tck=None
+        else:
+            self.tck=None
+            print("Not enough waypoints for spline fitting. Need at least 4 points.")
 
     ##############################################################
     #### TODO - Implement spline trajectory generation ###########
     #### TODO - Ensure velocity and acceleration constraints #####
     #### TODO - Add member functions as needed ###################
     ##############################################################
-
     def generate_bspline_trajectory(self, num_points=None):
         """
         Generate spline trajectory with complete velocity/acceleration profiles
-        Returns:
-        trajectory_points: (N,3)
-        time_points:       (N,)
-        velocities:        (N,3)  dP/dt
-        accelerations:     (N,3)  d2P/dt2
         """
-        print("Generating spline trajectory...")
 
-        if self.waypoints is None or len(self.waypoints) < 2:
-            return None, None, None, None
+        trajectory_points = None
+        time_points = None
+        velocities = None
+        accelerations = None
+        ramp_duration=4.0  # seconds
 
-        W = np.asarray(self.waypoints, dtype=float)
-        if W.ndim != 2 or W.shape[1] != 3:
-            return None, None, None, None
+        dt=0.02
 
-        # chord-length distances
-        seg = np.linalg.norm(np.diff(W, axis=0), axis=1)
-        # avoid division by zero if consecutive waypoints are identical
-        safe_seg = np.maximum(seg, 1e-9)
+        ############## IMPLEMENTATION STARTS HERE ##############
 
-        # average speed controls nominal timing
-        v_avg = float(self.average_velocity) if hasattr(self, "average_velocity") else 0.6
-        v_avg = max(v_avg, 1e-6)
-        segment_times = safe_seg / v_avg
-
-        time_knots = np.zeros(len(W))
-        time_knots[1:] = np.cumsum(segment_times)
-        total_T = float(time_knots[-1])
-        if total_T <= 0:
-            # degenerate path: all points the same
-            N = num_points or 100
-            tp = np.linspace(0.0, 1.0, N)
-            P = np.repeat(W[0][None, :], N, axis=0)
-            V = np.zeros_like(P)
-            A = np.zeros_like(P)
-            self.trajectory_duration = 1.0
-            return P, tp, V, A
-
-        # fit spline with time (seconds) as parameter u
-        k = int(min(3, len(W) - 1))  # valid degree with few points
-        tck, _ = splprep(W.T, u=time_knots, k=k, s=0.0)
-
-        # sampling
-        dt = 0.02 if num_points is None else None
-        if num_points is None:
-            num_points = int(np.ceil(total_T / dt))
-        time_points = np.linspace(0.0, total_T, num_points)
-
-        # positions at times
-        x, y, z = splev(time_points, tck)
-        trajectory_points = np.vstack((x, y, z)).T
-
-        # derivatives wrt time (since u is seconds here)
-        dx, dy, dz = splev(time_points, tck, der=1)
-        ddx, ddy, ddz = splev(time_points, tck, der=2)
-        velocities = np.vstack((dx, dy, dz)).T
-        accelerations = np.vstack((ddx, ddy, ddz)).T
-
-        # expose duration
-        self.trajectory_duration = total_T
-
-        # ---- OPTIONAL: enforce global caps by time-scaling ----
-        if self.max_velocity is not None or self.max_acceleration is not None:
-            v_cap = self.max_velocity if self.max_velocity is not None else np.inf
-            a_cap = self.max_acceleration if self.max_acceleration is not None else np.inf
-
-            v_peak = float(np.max(np.linalg.norm(velocities, axis=1))) if len(velocities) else 0.0
-            a_peak = float(np.max(np.linalg.norm(accelerations, axis=1))) if len(accelerations) else 0.0
-
-            scale_v = v_peak / v_cap if np.isfinite(v_cap) and v_peak > 1e-9 else 1.0
-            scale_a = np.sqrt(a_peak / a_cap) if np.isfinite(a_cap) and a_peak > 1e-9 else 1.0
-            scale = max(1.0, scale_v, scale_a)
-
-            if scale > 1.0:
-                time_points = time_points * scale
-                self.trajectory_duration = self.trajectory_duration * scale
-                velocities = velocities / scale
-                accelerations = accelerations / (scale ** 2)
-
-        return trajectory_points, time_points, velocities, accelerations
-    # def generate_bspline_trajectory(self, num_points=None):
-    #     """
-    #     Generate a time-parameterized B-spline trajectory through waypoints.
-
-    #     Returns:
-    #         trajectory_points: (N,3)
-    #         time_points:       (N,)
-    #         velocities:        (N,3)  dP/dt
-    #         accelerations:     (N,3)  d2P/F2
-    #     """
-    #     # ---- guards ----
-    #     if self.waypoints is None or len(self.waypoints) < 2:
-    #         return (None, None, None, None)
-
-    #     W = np.asarray(self.waypoints, dtype=float)
-    #     if W.ndim != 2 or W.shape[1] != 3:
-    #         return (None, None, None, None)
-
-    #     # Degenerate (all points the same)
-    #     if np.allclose(W, W[0], atol=1e-12):
-    #         N = num_points or 100
-    #         t = np.linspace(0.0, 1.0, N)
-    #         P = np.repeat(W[0][None, :], N, axis=0)
-    #         V = np.zeros_like(P)
-    #         A = np.zeros_like(P)
-    #         T = 1.0
-    #         return P, t * T, V, A
-
-    #     # ---- chord-length parameterization ----
-    #     seg = np.linalg.norm(np.diff(W, axis=0), axis=1)
-    #     arclen = np.concatenate([[0.0], np.cumsum(seg)])
-    #     total_len = arclen[-1]
-    #     if total_len <= 1e-9:  # extremely small
-    #         total_len = 1.0
-
-    #     # Nominal speed & duration
-    #     v_nom = 0.6  # m/s (tune if you like)
-    #     T = max(total_len / v_nom, 1.0)
-    #     self.trajectory_duration = T
-
-    #     # normalized parameter u in [0,1]
-    #     u = arclen / arclen[-1]
-
-    #     # ---- fit spline (k ≤ #points-1) ----
-    #     # If you have very few points, reduce k to avoid errors
-    #     k = int(min(3, len(W) - 1))
-
-    #     # splprep returns (tck, u_fitted)
-    #     tck, _u_fit = splprep(W.T, u=u, k=k, s=0.0)
-
-    #     # ---- sampling ----
-    #     if num_points is None:
-    #         num_points = max(200, 20 * len(W))
-
-    #     time_points = np.linspace(0.0, T, num_points)
-    #     u_t = time_points / T  # map time → spline parameter
-
-    #     # Clamp u_t numerically to [0,1]
-    #     u_t = np.clip(u_t, 0.0, 1.0)
-
-    #     # Positions
-    #     x, y, z = splev(u_t, tck)
-    #     trajectory_points = np.vstack([x, y, z]).T
-
-    #     # Derivatives wrt u
-    #     dx, dy, dz = splev(u_t, tck, der=1)
-    #     ddx, ddy, ddz = splev(u_t, tck, der=2)
-
-    #     # Chain rule:
-    #     # u = t/T → du/dt = 1/T
-    #     # dP/dt   = dP/du * (1/T)
-    #     # d2P/dt2 = d2P/du2 * (1/T)^2
-    #     invT = 1.0 / T
-    #     velocities = np.vstack([dx, dy, dz]).T * invT
-    #     accelerations = np.vstack([ddx, ddy, ddz]).T * (invT ** 2)
-
-    #     return trajectory_points, time_points, velocities, accelerations
-
-
+        # if self.tck is None:
+        #     print("Error: Spline coefficients (tck) not available.")
+        #     return None, None, None, None
+        
+        distances = np.linalg.norm(np.diff(self.waypoints, axis=0), axis=1)
+        segment_times = distances / self.average_velocity
     
+        time_knots = np.zeros(len(self.waypoints))
+        time_knots[1:] = np.cumsum(segment_times)
+        self.total_duration = time_knots[-1]
+
+
+        # u_fine= np.linspace(0 ,1, num_points)
+        # time_points = np.linspace(0, self.trajectory_duration, num_points)
+
+        self.tck, _ = splprep(self.waypoints.T, u=time_knots, k=3, s=0)
+
+        num_points = int(np.ceil(self.total_duration / dt))
+        time_points = np.linspace(0, self.total_duration, num_points)
+
+        x_coords, y_coords, z_coords = splev(time_points, self.tck)
+        trajectory_points = np.vstack((x_coords, y_coords, z_coords)).T
+
+        #First derivative for velocity
+        dp_du=splev(time_points, self.tck, der=1)
+        velocities=np.vstack(dp_du).T/ self.trajectory_duration
+
+        #Second derivative for acceleration
+        d2p_du2=splev(time_points, self.tck, der=2)
+        accelerations=np.vstack(d2p_du2).T/ (self.trajectory_duration**2)
+
+        dt = self.trajectory_duration / (num_points - 1) if num_points > 1 else 0
+        ramp_steps = int(ramp_duration / dt)
+
+        # ramp up profile
+        if ramp_steps > 0 and ramp_steps < num_points:
+            ramp_profile = np.linspace(0, 1, ramp_steps)
+
+            ramp_profile = 0.5 * (1 - np.cos(np.pi * ramp_profile)) 
+
+
+            velocities[:ramp_steps] *= ramp_profile.reshape(-1, 1)
+            accelerations[:ramp_steps] *= ramp_profile.reshape(-1, 1)
+
+
+            
+        return trajectory_points, time_points, velocities, accelerations
+            
+
  
     def visualize_trajectory(self, trajectory_points=None, velocities=None, 
                            accelerations=None, ax=None):
@@ -252,3 +164,7 @@ splines
             plt.show()
         
         return ax1 if not standalone else None
+    
+    # def generate_bspline_trajectory():
+
+    #     pass

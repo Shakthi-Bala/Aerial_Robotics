@@ -22,19 +22,13 @@ class PathPlanner:
         
         # RRT* parameters
         self.max_iterations = 3000
-        self.step_size = 1.0
-        self.goal_radius = 1.0
-        self.search_radius = 2.5
+        # self.step_size = 5.0
+        self.step_size = 0.1 # actual 
+        self.goal_radius = 0.1
+        self.search_radius = 0.25 # actual
+        # self.search_radius = 5
         self.goal_bias = 0.15  # 15% bias towards goal
-        
     
-    ############################################################################################################
-    #### TODO - Implement RRT* path planning algorithm in 3D (use the provided environment class) ##############
-    #### TODO - Store the final path in self.waypoints as a list of 3D points ##################################
-    #### TODO - Add member functions as needed #################################################################
-    ############################################################################################################
-
-
     
     def visualize_tree(self, ax=None):
         """Visualize the RRT* tree"""
@@ -73,10 +67,9 @@ class PathPlanner:
             ax.legend()
             plt.tight_layout()
             plt.show()
-        
+    
         return ax
     
-
     # Used from environment.py 
     # step 1 def generate_random_free_point(self):
     # step 2 def is_point_in_free_space(self, point):
@@ -237,136 +230,37 @@ class PathPlanner:
         
         return path[::-1]  # Reverse the path
 
-    def plan_path(
-    self,
-    max_iterations=None,
-    step_size=None,
-    goal_radius=None,
-    search_radius=None,
-    goal_bias=None,
-):
-        """
-        Build an RRT* path using existing helpers and store in self.waypoints.
-        Returns True on success, False otherwise.
-        Optional args override the planner defaults.
-        """
-        # Sanity checks
-        if not self.env.boundary or self.env.start_point is None or self.env.goal_point is None:
-            return False
-
-        start = np.array(self.env.start_point, dtype=float)
-        goal  = np.array(self.env.goal_point,  dtype=float)
-        if not self.env.is_point_in_free_space(start) or not self.env.is_point_in_free_space(goal):
-            return False
-
-        # Parameters (adaptive defaults)
-        if max_iterations is None:
-            max_iterations = self.max_iterations
-
-        xmin, ymin, zmin, xmax, ymax, zmax = self.env.boundary
-        map_diag = np.linalg.norm([xmax - xmin, ymax - ymin, zmax - zmin])
-        sg_dist  = np.linalg.norm(goal - start)
-
-        if step_size is None:
-            step_size = float(np.clip(sg_dist / 12.0, 0.15, 0.6))
-        if goal_radius is None:
-            goal_radius = float(np.clip(sg_dist / 15.0, 0.25, 0.7))
-        if search_radius is None:
-            search_radius = 2.5 * step_size
-        if goal_bias is None:
-            goal_bias = self.goal_bias
-
-        # Grow RRT*
-        self.tree_nodes = []
-        start_node = RRTNode(start)
-        self.tree_nodes.append(start_node)
-        goal_node = None
-
-        for _ in range(max_iterations):
-            # Sample with goal bias
-            if np.random.rand() < goal_bias:
-                sample = goal
-            else:
-                p = self.env.generate_random_free_point()
-                if p is None:
-                    continue
-                sample = np.array(p, dtype=float)
-
-            # Nearest
-            nearest = self.find_nearest_node(self.tree_nodes, sample)
-            if nearest is None:
-                continue
-
-            # Steer
-            new_pos = self.steer(nearest.position, sample, step_size)
-
-            # Validity
-            if not self.env.is_point_in_free_space(new_pos):
-                continue
-            if not self.env.is_line_collision_free(nearest.position, new_pos):
-                continue
-
-            # Near set & choose parent
-            near = self.find_near_nodes(self.tree_nodes, new_pos, search_radius)
-            best_parent, best_cost = self.choose_parent(near, new_pos)
-            if best_parent is None:
-                if not self.is_path_valid(nearest.position, new_pos):
-                    continue
-                best_parent = nearest
-                best_cost = nearest.cost + self.distance(nearest.position, new_pos)
-
-            # Add node
-            node = RRTNode(new_pos, parent=best_parent)
-            node.cost = best_cost
-            best_parent.children.append(node)
-            self.tree_nodes.append(node)
-
-            # Rewire
-            self.rewire_tree(self.tree_nodes, node, near)
-
-            # Goal check
-            if self.distance(new_pos, goal) <= goal_radius and self.is_path_valid(new_pos, goal):
-                goal_node = RRTNode(goal, parent=node)
-                goal_node.cost = node.cost + self.distance(new_pos, goal)
-                node.children.append(goal_node)
-                self.tree_nodes.append(goal_node)
-                break
-
-        if goal_node is None:
-            return False
-
-        # Extract (& optionally simplify)
-        self.waypoints = self.extract_path(goal_node)
-        self.waypoints = self.simplify_path(self.waypoints)
-        return True
-
-
-
     
 
-    def simplify_path(self, waypoints):
-        """
-        Simplify the path using a straightforward line-of-sight check.
-        """
-        if len(waypoints) < 3:
-            return waypoints
+    # def simplify_path(self, waypoints):
+    #     """
+    #     Simplify the path using a straightforward line-of-sight check.
+    #     """
+    #     if len(waypoints) < 3:
+    #         return waypoints
 
-        # Start the simplified path with the first waypoint
-        simplified_path = [waypoints[0]]
+    #     # Start the simplified path with the first waypoint
+    #     simplified_path = [waypoints[0]]
 
-        # Iterate through the waypoints to find points that can be skipped
-        for i in range(1, len(waypoints) - 1):
-            # Check if we can go directly from the last point in our simplified path
-            # to the point *after* the current one.
-            if not self.env.is_line_collision_free(simplified_path[-1], waypoints[i + 1]):
-                # If we can't skip the current point, we must add it.
-                simplified_path.append(waypoints[i])
+    #     # Iterate through the waypoints to find points that can be skipped
+    #     for i in range(1, len(waypoints) - 1):
+    #         # Check if we can go directly from the last point in our simplified path
+    #         # to the point *after* the current one.
+    #         if not self.env.is_line_collision_free(simplified_path[-1], waypoints[i + 1]):
+    #             # If we can't skip the current point, we must add it.
+    #             simplified_path.append(waypoints[i])
         
-        # Always add the very last waypoint (the goal)
-        simplified_path.append(waypoints[-1])
+    #     # Always add the very last waypoint (the goal)
+    #     simplified_path.append(waypoints[-1])
 
-        return simplified_path
+    #     return simplified_path
     
     # testing for bspline 
-    # def simplify_path(self,waypoints):
-    #     return waypoints
+    def simplify_path(self,waypoints):
+        return waypoints
+    
+    
+    
+    # what is this function supposed to do
+    def plan_path():
+        pass
