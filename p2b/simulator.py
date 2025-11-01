@@ -786,3 +786,4 @@ class LiveQuadrotorSimulator:
         filename = f'./log/{filename_prefix}.mat'
         scipy.io.savemat(filename, data)
         print(f"💾 Complete simulation results saved to {filename}")
+
